@@ -3,6 +3,7 @@
 pragma solidity 0.8.9;
 
 import "@openzeppelin/contracts/access/Ownable.sol";
+import "@openzeppelin/contracts/utils/Strings.sol";
 
 /**
  * @title Voting
@@ -39,61 +40,122 @@ contract Voting is Ownable{
         uint voteCount;
         }
 
-    modifier authorized{
-         require (voters[msg.sender]==true,"You are not authorized.");
+    modifier isRegistered{
+         require (voters[msg.sender].isRegistered==true,"You are not authorized.");
          _;
     }
 
-    mapping (address => bool) voters;
+    modifier hasState(WorkflowStatus status){
+         require (currentStatus == status,"You can't do that at this state of the voting process.");
+         _;
+    }
+
+    mapping (address => Voter) voters;
     Proposal[] proposals;
     uint winningProposalId;
 
     WorkflowStatus currentStatus = WorkflowStatus.RegisteringVoters;
 
-    //Admin always have rights to add voters, regardless state of voting
 
-    function registerVoter(address _voterAddress) public onlyOwner {
-        voters[_voterAddress] = true;
+
+   /*
+    Admin only actions, related to the workflow
+   */
+    function registerVoter(address _voterAddress) public onlyOwner{
+        //Admin always have rights to add voters, regardless state of voting
+        require (voters[_voterAddress].isRegistered == false, "This voter is already registered.");
+
+        voters[_voterAddress] = Voter({isRegistered : true, hasVoted : false, votedProposalId : 0});
         emit VoterRegistered(_voterAddress);
     }
 
     function revokeVoter(address _voterAddress) public onlyOwner {
+        require (voters[_voterAddress].isRegistered == true, "This voter is not registered.");
+        
+        //As we revoke the voter, we should rollback his vote
+        if(voters[_voterAddress].hasVoted){
+            proposals[voters[_voterAddress].votedProposalId].voteCount =proposals[voters[_voterAddress].votedProposalId].voteCount - 1;
+        }
+
         delete voters[_voterAddress];
 
-        //delete voter vote
-
+        //If vote has been tailled, we should refresh results
+        if(currentStatus == WorkflowStatus.VotesTallied){
+            selectWinner();
+        }
         emit VoterRevoked(_voterAddress);
     }
 
-    function startRegistration() public onlyOwner{
-        changeSessionStatus(WorkflowStatus.RegisteringVoters,WorkflowStatus.ProposalsRegistrationStarted);
+    function startRegistration() public onlyOwner hasState(WorkflowStatus.RegisteringVoters){
+        changeSessionStatus(WorkflowStatus.ProposalsRegistrationStarted);
     }
 
-    function stopRegistration() public onlyOwner{ 
-        changeSessionStatus(WorkflowStatus.ProposalsRegistrationStarted,WorkflowStatus.ProposalsRegistrationEnded);
+    function stopRegistration() public onlyOwner hasState(WorkflowStatus.ProposalsRegistrationStarted){ 
+        changeSessionStatus(WorkflowStatus.ProposalsRegistrationEnded);
     }
 
-    function startVotingSession() public onlyOwner { 
-        changeSessionStatus(WorkflowStatus.ProposalsRegistrationEnded,WorkflowStatus.VotingSessionStarted);
+    function startVotingSession() public onlyOwner hasState(WorkflowStatus.ProposalsRegistrationEnded){ 
+        changeSessionStatus(WorkflowStatus.VotingSessionStarted);
     }
 
-    function stopVotingSession() public onlyOwner { 
-      changeSessionStatus(WorkflowStatus.VotingSessionStarted,WorkflowStatus.VotingSessionEnded);
+    function stopVotingSession() public onlyOwner hasState(WorkflowStatus.VotingSessionStarted){ 
+        changeSessionStatus(WorkflowStatus.VotingSessionEnded);
     }
 
-    function selectWinner() public onlyOwner { 
-        // todo select winner
-      changeSessionStatus(WorkflowStatus.VotingSessionEnded,WorkflowStatus.VotesTallied);
+    function selectWinner() public onlyOwner hasState(WorkflowStatus.VotingSessionStarted){ 
+        for(uint i = 0 ; i < proposals.length ; i++){
+            if(proposals[i].voteCount > proposals[winningProposalId].voteCount){
+                winningProposalId = i;
+            }
+        }
+
+        changeSessionStatus(WorkflowStatus.VotesTallied);
     }
 
-    function changeSessionStatus(WorkflowStatus expectedState, WorkflowStatus newState) private {
-        require (currentStatus == expectedState, "Current workflow status does not allow this change.");
-
-        currentStatus = newState;
-
-        emit WorkflowStatusChange(expectedState, newState);
+    function resetWorkflow() public onlyOwner{ 
+        // todo reset
+        changeSessionStatus(WorkflowStatus.RegisteringVoters);
     }
 
+    function changeSessionStatus(WorkflowStatus newStatus) private {
+        emit WorkflowStatusChange(currentStatus, newStatus);
+        currentStatus = newStatus;
+    }
+
+
+    /*
+    User action
+
+    */
+
+    //Payable in case someone want to pay a bribe, won't change anything as we are incorruptible.
+    function addProposal(string memory proposalDescription) public payable isRegistered hasState(WorkflowStatus.ProposalsRegistrationStarted){
+        proposals.push(Proposal({description:proposalDescription,voteCount:0}));
+    }
+
+
+    //Payable in case someone want to pay a bribe, won't change anything as we are incorruptible.
+    function addVote(string memory proposalDescription) public payable isRegistered hasState(WorkflowStatus.VotingSessionStarted){
+      
+    }
+
+    function getProposals() public isRegistered view returns(Proposal[] memory)  {
+        return proposals;
+    }
+/* WIP
+    function findProposal(string memory proposalDescription) private returns(Proposal memory){
+        for(int i = 0 ; i< proposals.length ; i ++){
+            if(compareStrings(proposals[i].description, proposalDescription)){
+                return proposals[i];
+            }
+        }
+        revert; 
+    }
+*/
+
+    function compareStrings(string memory a, string memory b) private pure returns (bool){
+    return (keccak256(abi.encodePacked((a))) == keccak256(abi.encodePacked((b))));
+}
 
     function getVotingSessionCurrentState() public view returns (string memory){
         if(currentStatus == WorkflowStatus.RegisteringVoters){
