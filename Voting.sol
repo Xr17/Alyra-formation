@@ -17,8 +17,6 @@ contract Voting is Ownable{
     event WorkflowStatusChange(WorkflowStatus previousStatus, WorkflowStatus newStatus);
     event ProposalRegistered(uint proposalId);
     event Voted (address voter, uint proposalId);
-    event Authorized(address _address); 
-    event AuthorizationRevoked(address _address);
 
     enum WorkflowStatus {
         RegisteringVoters,
@@ -71,10 +69,10 @@ contract Voting is Ownable{
 
     function revokeVoter(address _voterAddress) public onlyOwner {
         require (voters[_voterAddress].isRegistered == true, "This voter is not registered.");
-        
+
         //As we revoke the voter, we should rollback his vote
         if(voters[_voterAddress].hasVoted){
-            proposals[voters[_voterAddress].votedProposalId].voteCount =proposals[voters[_voterAddress].votedProposalId].voteCount - 1;
+            proposals[voters[_voterAddress].votedProposalId].voteCount--;
         }
 
         delete voters[_voterAddress];
@@ -90,19 +88,20 @@ contract Voting is Ownable{
         changeSessionStatus(WorkflowStatus.ProposalsRegistrationStarted);
     }
 
-    function stopRegistration() public onlyOwner hasState(WorkflowStatus.ProposalsRegistrationStarted){ 
+    function stopRegistration() public onlyOwner hasState(WorkflowStatus.ProposalsRegistrationStarted){
         changeSessionStatus(WorkflowStatus.ProposalsRegistrationEnded);
     }
 
-    function startVotingSession() public onlyOwner hasState(WorkflowStatus.ProposalsRegistrationEnded){ 
+    function startVotingSession() public onlyOwner hasState(WorkflowStatus.ProposalsRegistrationEnded){
         changeSessionStatus(WorkflowStatus.VotingSessionStarted);
     }
 
-    function stopVotingSession() public onlyOwner hasState(WorkflowStatus.VotingSessionStarted){ 
+    function stopVotingSession() public onlyOwner hasState(WorkflowStatus.VotingSessionStarted){
         changeSessionStatus(WorkflowStatus.VotingSessionEnded);
     }
 
-    function selectWinner() public onlyOwner hasState(WorkflowStatus.VotingSessionStarted){ 
+    // In case of equality first proposal is taken.
+    function selectWinner() public onlyOwner hasState(WorkflowStatus.VotingSessionEnded){
         for(uint i = 0 ; i < proposals.length ; i++){
             if(proposals[i].voteCount > proposals[winningProposalId].voteCount){
                 winningProposalId = i;
@@ -112,16 +111,16 @@ contract Voting is Ownable{
         changeSessionStatus(WorkflowStatus.VotesTallied);
     }
 
-    function resetWorkflow() public onlyOwner{ 
-        // todo reset
-        changeSessionStatus(WorkflowStatus.RegisteringVoters);
+    function sendMoney(address to, uint value) public onlyOwner{
+        require(address(this).balance>=value, "Not enouph balance to send money.");
+        address payable receiver = payable(to);
+        receiver.transfer(value);
     }
 
     function changeSessionStatus(WorkflowStatus newStatus) private {
         emit WorkflowStatusChange(currentStatus, newStatus);
         currentStatus = newStatus;
     }
-
 
     /*
     User action
@@ -131,31 +130,43 @@ contract Voting is Ownable{
     //Payable in case someone want to pay a bribe, won't change anything as we are incorruptible.
     function addProposal(string memory proposalDescription) public payable isRegistered hasState(WorkflowStatus.ProposalsRegistrationStarted){
         proposals.push(Proposal({description:proposalDescription,voteCount:0}));
+        emit ProposalRegistered(proposals.length-1);
     }
 
 
     //Payable in case someone want to pay a bribe, won't change anything as we are incorruptible.
-    function addVote(string memory proposalDescription) public payable isRegistered hasState(WorkflowStatus.VotingSessionStarted){
-      
+    function addVote(uint proposalId) public payable isRegistered hasState(WorkflowStatus.VotingSessionStarted){
+        require (voters[msg.sender].hasVoted == false, "You have already voted for that session.");
+        require (proposalId < proposals.length, "This proposal does not exists.");
+
+        voters[msg.sender].hasVoted = true;
+        voters[msg.sender].votedProposalId = proposalId;
+        proposals[proposalId].voteCount++;
+
+        emit Voted(msg.sender,proposalId);
     }
 
     function getProposals() public isRegistered view returns(Proposal[] memory)  {
         return proposals;
     }
-/* WIP
-    function findProposal(string memory proposalDescription) private returns(Proposal memory){
-        for(int i = 0 ; i< proposals.length ; i ++){
-            if(compareStrings(proposals[i].description, proposalDescription)){
-                return proposals[i];
+
+    function getVoters(address _voterAddress) public isRegistered view returns(Voter memory)  {
+        require (voters[_voterAddress].isRegistered == true, "This voter does not exists.");
+        return voters[_voterAddress];
+    }
+
+    function getWinner() public isRegistered hasState(WorkflowStatus.VotesTallied) view returns(Proposal memory)   {
+        return proposals[winningProposalId];
+    }
+
+    function findProposalId(string memory proposalDescription) public view returns(uint){
+        for(uint i = 0 ; i< proposals.length ; i ++){
+            if(keccak256(abi.encodePacked((proposals[i].description))) == keccak256(abi.encodePacked((proposalDescription)))){
+                return i;
             }
         }
-        revert; 
+        revert ("No proposition founded.");
     }
-*/
-
-    function compareStrings(string memory a, string memory b) private pure returns (bool){
-    return (keccak256(abi.encodePacked((a))) == keccak256(abi.encodePacked((b))));
-}
 
     function getVotingSessionCurrentState() public view returns (string memory){
         if(currentStatus == WorkflowStatus.RegisteringVoters){
